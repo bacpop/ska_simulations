@@ -58,11 +58,11 @@ const INDEL_DIST: [f64; 20] = [
 #[command(version, about, long_about = None)]
 struct Args {
     /// File to mutate (fasta with single contig)
-    #[arg(short, long, default_value = "pneumo.fa")]
+    #[arg(long, default_value = "pneumo.fa")]
     ref_file: String,
 
     /// Output file for split-kmers
-    #[arg(short, long, default_value = "split_kmers.txt")]
+    #[arg(long, default_value = "split_kmers.txt")]
     kmer_file: String,
 
     /// K-mer size
@@ -153,62 +153,79 @@ fn open_ref(file: &str) -> io::Result<String> {
 fn main() {
     let args = Args::parse();
 
+    // Read input and open split-k output file
     let mut start_seq = open_ref(&args.ref_file).unwrap().as_bytes().to_vec();
     let mut k_file = BufWriter::new(File::create(args.kmer_file).unwrap());
 
+    // RNG and simulation progress
     let mut rng = rand::thread_rng();
     let split_k = (args.k - 1) / 2;
     let mut sites = start_seq.len();
     let mut dist = 0.0;
 
+    // Set up GTR+GAMMA+I model
     let gtr_matrix = GtrDraws::new(ALPHA, BETA, GAMMA, DELTA, EPS, ETA, PI_A, PI_C, PI_G, PI_T);
-
     let gamma = Gamma::new(GAMMA_SHAPE, GAMMA_SCALE).unwrap();
     let mut weights = site_rates(sites, &gamma, &mut rng);
     let mut pos_dist = WeightedIndex::new(&weights).unwrap();
-    let indel_size_dist = WeightedIndex::new(&INDEL_DIST).unwrap();
+    let indel_size_dist = WeightedIndex::new(INDEL_DIST).unwrap();
     let base_dist = WeightedIndex::new(vec![PI_A, PI_C, PI_G, PI_T]).unwrap();
 
-    // Sum of rates is 1
+    // Gillespie algorithm, sum of rates is 1
     let r_indel = args.indel_rate / (1.0 + args.indel_rate);
-    // let r_sub = 1.0 / (1.0 + INDEL_RATE);;
-
+    // not needed as only two possibilities
+    // let r_sub = 1.0 / (1.0 + INDEL_RATE);
     while dist < (args.end_dist * start_seq.len() as f64) {
         let mutated_pos = pos_dist.sample(&mut rng);
         //eprintln!("{mutated_pos}");
         let u1: f64 = rng.gen();
-        //println!("{}\t{}", dist, u1);
         dist += -u1.ln();
 
         let u2: f64 = rng.gen();
         if u2 < r_indel {
-            // TODO Make an INDEL
+            // Make an INDEL (in/del equally likely)
             let size = indel_size_dist.sample(&mut rng) + 1;
             let u3: f64 = rng.gen();
             if u3 > 0.5 {
-                // IN
+                // Insertion
                 sites += size;
                 let mut new_seq = vec![start_seq[mutated_pos]];
                 for _idx in 0..size {
                     new_seq.push(BASE_VEC[base_dist.sample(&mut rng)]);
                 }
+                /*
+                eprintln!(
+                    "IN {mutated_pos}:{}",
+                    String::from_utf8(new_seq.clone()).unwrap()
+                );
+                */
                 start_seq.splice(mutated_pos..(mutated_pos + 1), new_seq);
 
                 let mut new_weights = vec![weights[mutated_pos]];
                 new_weights.append(&mut site_rates(size, &gamma, &mut rng));
                 weights.splice(mutated_pos..(mutated_pos + 1), new_weights);
             } else {
-                // DEL
+                // Deletion
                 sites -= size;
+                /*
+                eprintln!(
+                    "DEL {mutated_pos}:{}",
+                    String::from_utf8(start_seq[mutated_pos..(mutated_pos + size)].to_vec())
+                        .unwrap()
+                );
+                */
                 start_seq.drain(mutated_pos..(mutated_pos + size));
                 weights.drain(mutated_pos..(mutated_pos + size));
             }
+            // Need new gamma heterogeneity
             pos_dist = WeightedIndex::new(&weights).unwrap();
         } else {
             // Make a substitution
             let old_base = start_seq[mutated_pos] as char;
             start_seq[mutated_pos] =
                 gtr_matrix.draw_mutation(start_seq[mutated_pos] as char, &mut rng) as u8;
+
+            // Write out the split k-mer in ska nk --full-info format
             let k_start = mutated_pos.saturating_sub(split_k);
             let k_end = (mutated_pos + split_k).min(sites - 1);
             writeln!(
