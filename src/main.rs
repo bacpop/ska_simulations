@@ -205,8 +205,6 @@ fn main() {
                 new_weights.append(&mut site_rates(size, &gamma, &mut rng));
                 weights.splice(mutated_pos..(mutated_pos + 1), new_weights);
             } else {
-                // Deletion
-                sites -= size;
                 /*
                 eprintln!(
                     "DEL {mutated_pos}:{}",
@@ -214,8 +212,11 @@ fn main() {
                         .unwrap()
                 );
                 */
-                start_seq.drain(mutated_pos..(mutated_pos + size));
-                weights.drain(mutated_pos..(mutated_pos + size));
+                let end_del = sites.min(mutated_pos + size);
+                start_seq.drain(mutated_pos..end_del);
+                weights.drain(mutated_pos..end_del);
+                // Deletion
+                sites -= size;
             }
             // Need new gamma heterogeneity
             pos_dist = WeightedIndex::new(&weights).unwrap();
